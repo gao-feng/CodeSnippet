@@ -219,6 +219,35 @@ function Test-IsInterestingFilePath {
     return $true
 }
 
+function Test-IsLibraryFilePath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    return (
+        $Path -match '\.(so|dll|dylib)(\.\d+)*$' -or
+        $Path -match '\.z\.so(\.\d+)*$'
+    )
+}
+
+function Get-FileType {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "Unknown" }
+    if ($Path.StartsWith("/dev/")) { return "DeviceFile" }
+    if ($Path.StartsWith("/proc/")) { return "ProcFile" }
+    if ($Path.StartsWith("/memfd:")) { return "Memfd" }
+    if ($Path -match '^\[.*\]$') { return "SpecialMapping" }
+    if (Test-IsLibraryFilePath -Path $Path) { return "DynamicLibrary" }
+    if ($Path -match '^/(system|vendor|product|system_ext|apex)/.*/bin(/|$)' -or $Path -match '^/(system|vendor|product|system_ext)/bin(/|$)' -or $Path -match '/bin/[^/]+$') {
+        return "ExecutableBinary"
+    }
+    if ($Path.StartsWith("/")) { return "RegularFile" }
+    return "Other"
+}
+
 function Group-FileMappings {
     param([object[]]$Entries)
 
@@ -235,6 +264,7 @@ function Group-FileMappings {
                 Inode = [int64]$entry.Inode
                 FilePath = $entry.Path
                 FileName = [System.IO.Path]::GetFileName($entry.Path)
+                FileType = (Get-FileType -Path $entry.Path)
                 SizeKB = 0
                 RssKB = 0
                 PssKB = 0
@@ -391,6 +421,7 @@ foreach ($proc in $processInfos) {
                 Inode = $targetFile.Inode
                 FilePath = $targetFile.FilePath
                 FileName = $targetFile.FileName
+                FileType = $targetFile.FileType
                 FileSizeKB = $targetFile.SizeKB
                 TargetProcessPssKB = $targetFile.PssKB
                 TargetProcessRssKB = $targetFile.RssKB
@@ -418,6 +449,7 @@ $summaryRows = foreach ($fileGroup in ($usageRows | Group-Object FileKey)) {
         Inode = $first.Inode
         FilePath = $first.FilePath
         FileName = $first.FileName
+        FileType = $first.FileType
         FileSizeKB = $first.FileSizeKB
         TargetProcessPssKB = $first.TargetProcessPssKB
         TargetProcessRssKB = $first.TargetProcessRssKB
@@ -476,7 +508,7 @@ Write-Host ("JSON report      : {0}" -f $jsonPath)
 Write-Host ""
 
 Write-Host "Top shared files by system PSS"
-$summaryRows | Select-Object -First 20 FileName, FileSizeKB, SystemTotalPssKB, TargetProcessPssKB, ProcessCount, FilePath | Format-Table -AutoSize
+$summaryRows | Select-Object -First 20 FileName, FileType, FileSizeKB, SystemTotalPssKB, TargetProcessPssKB, ProcessCount, FilePath | Format-Table -AutoSize
 
 Write-Host ""
 Write-Host "Top related processes by shared-file PSS"

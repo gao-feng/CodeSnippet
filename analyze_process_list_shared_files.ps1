@@ -276,6 +276,22 @@ function Test-IsLibraryPath {
     return $false
 }
 
+function Get-FileType {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "Unknown" }
+    if ($Path.StartsWith("/dev/")) { return "DeviceFile" }
+    if ($Path.StartsWith("/proc/")) { return "ProcFile" }
+    if ($Path.StartsWith("/memfd:")) { return "Memfd" }
+    if ($Path -match '^\[.*\]$') { return "SpecialMapping" }
+    if (Test-IsLibraryPath -Path $Path) { return "DynamicLibrary" }
+    if ($Path -match '^/(system|vendor|product|system_ext|apex)/.*/bin(/|$)' -or $Path -match '^/(system|vendor|product|system_ext)/bin(/|$)' -or $Path -match '/bin/[^/]+$') {
+        return "ExecutableBinary"
+    }
+    if ($Path.StartsWith("/")) { return "RegularFile" }
+    return "Other"
+}
+
 function Get-FileIdentityKey {
     param(
         [string]$Path,
@@ -459,6 +475,7 @@ foreach ($proc in $targetProcesses) {
                 Inode = [int64]$entry.Inode
                 FilePath = $entry.Path
                 FileName = [System.IO.Path]::GetFileName($entry.Path)
+                FileType = (Get-FileType -Path $entry.Path)
                 IsLibrary = (Test-IsLibraryPath -Path $entry.Path)
             }
         }
@@ -479,6 +496,7 @@ foreach ($proc in $targetProcesses) {
             Inode = $usage.Inode
             FilePath = $usage.FilePath
             FileName = $usage.FileName
+            FileType = (Get-FileType -Path $usage.FilePath)
             IsLibrary = (Test-IsLibraryPath -Path $usage.FilePath)
             FileSizeKB = $usage.SizeKB
             TargetProcessPssKB = $usage.PssKB
@@ -555,6 +573,7 @@ foreach ($proc in ($relatedProcessMap.Values | Sort-Object @{ Expression = { [in
                 Inode = $usage.Inode
                 FilePath = $usage.FilePath
                 FileName = $usage.FileName
+                FileType = (Get-FileType -Path $usage.FilePath)
                 IsLibrary = $targetFileMap[$fileKey].IsLibrary
                 FileSizeKB = $usage.SizeKB
                 ProcessId = $proc.ProcessId
@@ -599,6 +618,7 @@ foreach ($group in ($detailRows | Group-Object FileKey)) {
         Inode = $first.Inode
         FilePath = $first.FilePath
         FileName = $first.FileName
+        FileType = $first.FileType
         IsLibrary = $first.IsLibrary
         FileSizeKB = $first.FileSizeKB
         SystemTotalPssKB = $systemTotalPss
@@ -687,7 +707,7 @@ Write-Host ("JSON report        : {0}" -f $jsonPath)
 Write-Host ""
 
 Write-Host "Top files by system total PSS"
-$fileSummaryRows | Select-Object -First 20 FileName, IsLibrary, FileSizeKB, SystemTotalPssKB, ProcessCount, FilePath | Format-Table -AutoSize
+$fileSummaryRows | Select-Object -First 20 FileName, FileType, IsLibrary, FileSizeKB, SystemTotalPssKB, ProcessCount, FilePath | Format-Table -AutoSize
 
 Write-Host ""
 Write-Host "Top processes by shared-file PSS"

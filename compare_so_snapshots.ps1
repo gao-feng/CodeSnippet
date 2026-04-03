@@ -165,6 +165,22 @@ function Test-IsLibraryFilePath {
     )
 }
 
+function Get-FileType {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "Unknown" }
+    if ($Path.StartsWith("/dev/")) { return "DeviceFile" }
+    if ($Path.StartsWith("/proc/")) { return "ProcFile" }
+    if ($Path.StartsWith("/memfd:")) { return "Memfd" }
+    if ($Path -match '^\[.*\]$') { return "SpecialMapping" }
+    if (Test-IsLibraryFilePath -Path $Path) { return "DynamicLibrary" }
+    if ($Path -match '^/(system|vendor|product|system_ext|apex)/.*/bin(/|$)' -or $Path -match '^/(system|vendor|product|system_ext)/bin(/|$)' -or $Path -match '/bin/[^/]+$') {
+        return "ExecutableBinary"
+    }
+    if ($Path.StartsWith("/") -or $Path -match '^[A-Za-z]:\\') { return "RegularFile" }
+    return "Other"
+}
+
 function Get-BssLibraryName {
     param([string]$AnonPath)
 
@@ -240,6 +256,7 @@ function Analyze-FilesFromSmaps {
 
         [pscustomobject]@{
             FileName = [System.IO.Path]::GetFileName($(if ($filePath) { $filePath } else { $fileKey }))
+            FileType = (Get-FileType -Path $filePath)
             IsLibrary = (Test-IsLibraryFilePath -Path $filePath)
             Inode = [int64]$fileRow.Inode
             FileKey = $fileKey
@@ -282,6 +299,7 @@ function Get-FileRowsFromSnapshotDir {
             $rows = @($raw.Libraries | ForEach-Object {
                 [pscustomobject]@{
                     FileName = if ($_.PSObject.Properties.Name -contains "FileName") { [string]$_.FileName } else { [string]$_.Library }
+                    FileType = if ($_.PSObject.Properties.Name -contains "FileType") { [string]$_.FileType } else { (Get-FileType -Path ([string]$_.FilePath)) }
                     IsLibrary = if ($_.PSObject.Properties.Name -contains "IsLibrary") { [bool]$_.IsLibrary } else { $true }
                     Inode = [int64]$_.Inode
                     FileKey = [string]$_.FileKey
@@ -349,6 +367,7 @@ function Compare-FileRows {
 
         [pscustomobject]@{
             FileName = if ($after) { [string]$(if ($after.PSObject.Properties.Name -contains "FileName") { $after.FileName } else { $after.Library }) } elseif ($before) { [string]$(if ($before.PSObject.Properties.Name -contains "FileName") { $before.FileName } else { $before.Library }) } else { "" }
+            FileType = if ($after -and $after.PSObject.Properties.Name -contains "FileType") { [string]$after.FileType } elseif ($before -and $before.PSObject.Properties.Name -contains "FileType") { [string]$before.FileType } else { (Get-FileType -Path ([string]$(if ($after) { $after.FilePath } elseif ($before) { $before.FilePath } else { "" }))) }
             IsLibrary = if ($after -and $after.PSObject.Properties.Name -contains "IsLibrary") { [bool]$after.IsLibrary } elseif ($before -and $before.PSObject.Properties.Name -contains "IsLibrary") { [bool]$before.IsLibrary } else { $true }
             Inode = [int64]$(if ($after -and $after.PSObject.Properties.Name -contains "Inode") { $after.Inode } elseif ($before -and $before.PSObject.Properties.Name -contains "Inode") { $before.Inode } else { 0 })
             FileKey = $key
@@ -455,7 +474,7 @@ Write-Host ""
 Write-Host "Top PSS increases"
 $diffRows |
     Where-Object { $_.DeltaPssKB -gt 0 } |
-    Select-Object -First 20 FileName, IsLibrary, AfterFileSizeKB, DeltaPssKB, AfterPssKB, BeforePssKB, ChangeType, FilePath |
+    Select-Object -First 20 FileName, FileType, IsLibrary, AfterFileSizeKB, DeltaPssKB, AfterPssKB, BeforePssKB, ChangeType, FilePath |
     Format-Table -AutoSize
 
 Write-Host ""
@@ -463,7 +482,7 @@ Write-Host "Top PSS decreases"
 $diffRows |
     Sort-Object DeltaPssKB |
     Where-Object { $_.DeltaPssKB -lt 0 } |
-    Select-Object -First 20 FileName, IsLibrary, BeforeFileSizeKB, DeltaPssKB, AfterPssKB, BeforePssKB, ChangeType, FilePath |
+    Select-Object -First 20 FileName, FileType, IsLibrary, BeforeFileSizeKB, DeltaPssKB, AfterPssKB, BeforePssKB, ChangeType, FilePath |
     Format-Table -AutoSize
 
 if ($Json) {

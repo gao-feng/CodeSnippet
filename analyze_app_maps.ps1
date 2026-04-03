@@ -238,6 +238,22 @@ function Test-IsLibraryFilePath {
     )
 }
 
+function Get-FileType {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "Unknown" }
+    if ($Path.StartsWith("/dev/")) { return "DeviceFile" }
+    if ($Path.StartsWith("/proc/")) { return "ProcFile" }
+    if ($Path.StartsWith("/memfd:")) { return "Memfd" }
+    if ($Path -match '^\[.*\]$') { return "SpecialMapping" }
+    if (Test-IsLibraryFilePath -Path $Path) { return "DynamicLibrary" }
+    if ($Path -match '^/(system|vendor|product|system_ext|apex)/.*/bin(/|$)' -or $Path -match '^/(system|vendor|product|system_ext)/bin(/|$)' -or $Path -match '/bin/[^/]+$') {
+        return "ExecutableBinary"
+    }
+    if ($Path.StartsWith("/") -or $Path -match '^[A-Za-z]:\\') { return "RegularFile" }
+    return "Other"
+}
+
 function Get-BssLibraryName {
     param([string]$AnonPath)
 
@@ -321,6 +337,7 @@ function Analyze-FileMappings {
 
         [pscustomobject]@{
             FileName        = [System.IO.Path]::GetFileName($fileRow.DisplayPath)
+            FileType        = (Get-FileType -Path $fileRow.DisplayPath)
             IsLibrary       = (Test-IsLibraryFilePath -Path $fileRow.DisplayPath)
             Inode           = [int64]$fileRow.Inode
             FileKey         = $fileKey
@@ -348,6 +365,7 @@ function Analyze-FileMappings {
         [pscustomobject]@{
             FileName        = $row.FileName
             SameNameCount   = $sameNameCounts[[string]$row.FileName]
+            FileType        = $row.FileType
             IsLibrary       = $row.IsLibrary
             Inode           = $row.Inode
             FileKey         = $row.FileKey
@@ -471,7 +489,7 @@ Write-Host ("JSON report       : {0}" -f $jsonPath)
 Write-Host ""
 
 $analysis.Files |
-    Select-Object -First 30 FileName, IsLibrary, TotalPssKB, TotalRssKB, FilePssKB, BssPssKB, Segments, FilePath |
+    Select-Object -First 30 FileName, FileType, IsLibrary, TotalPssKB, TotalRssKB, FilePssKB, BssPssKB, Segments, FilePath |
     Format-Table -AutoSize
 
 if (-not $KeepRawFiles -and $PSCmdlet.ParameterSetName -eq "Capture") {
