@@ -1,0 +1,1 @@
+# Project specific obfuscation rules can be added here when needed.

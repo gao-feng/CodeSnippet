@@ -1,0 +1,13 @@
+# Linux emptyso build outputs
+/linux/emptyso/libempty.so
+/linux/emptyso/measure_dlopen
+
+# HarmonyOS / DevEco generated files
+/oh/import/.hvigor/
+/oh/import/.idea/
+/oh/import/.vscode/
+/oh/import/entry/.cxx/
+/oh/import/entry/build/
+/oh/import/entry/oh_modules/
+/oh/import/hvigor/
+/oh/import/oh_modules/
