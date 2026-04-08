@@ -11,3 +11,19 @@
 /oh/import/entry/oh_modules/
 /oh/import/hvigor/
 /oh/import/oh_modules/
+
+# oh/digso generated data and reports
+/oh/digso/proc_*/
+/oh/digso/compare_so_*/
+/oh/digso/shared_file_usage_*/
+/oh/digso/process_list_shared_files_*/
+/oh/digso/zero_delta_lookup_*/
+/oh/digso/Data/
+/oh/digso/*.csv
+/oh/digso/*.json
+/oh/digso/*.txt
+/oh/digso/*.log
+/oh/digso/*.tmp
+!/oh/digso/*.ps1
+!/oh/digso/*.bat
+!/oh/digso/process_list.txt
