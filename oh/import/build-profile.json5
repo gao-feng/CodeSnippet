@@ -1,0 +1,55 @@
+{
+  "app": {
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "5.0.5(17)",
+        "targetSdkVersion": "5.0.5(17)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ],
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "C:\\Users\\ka69k\\.ohos\\config\\default_import_7CvCauvRAi7LQd55xEAowlHlMGsjDPkliCFuw-xCxqU=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001A2D7431B2850895320FDB13DB40DC95E5385687C8816ABA00207A5C9205A09CE1274193701F85",
+          "profile": "C:\\Users\\ka69k\\.ohos\\config\\default_import_7CvCauvRAi7LQd55xEAowlHlMGsjDPkliCFuw-xCxqU=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "C:\\Users\\ka69k\\.ohos\\config\\default_import_7CvCauvRAi7LQd55xEAowlHlMGsjDPkliCFuw-xCxqU=.p12",
+          "storePassword": "0000001A59E4FB5699C72D6CA0EAA2F47FBB69FD6717909D5996614F56781F4B0AF566C1337C088A1C92"
+        }
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

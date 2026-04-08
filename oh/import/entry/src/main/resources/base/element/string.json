@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "MMKV demo entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "MMKV demo ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "MMKVDemo"
+    }
+  ]
+}
