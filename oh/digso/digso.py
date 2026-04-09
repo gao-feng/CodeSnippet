@@ -867,7 +867,16 @@ def analyze_library_import_sources(files: list[dict], process_exe: str, export_r
 
 
 def mermaid_node_id(prefix: str, value: str, used_ids: set[str]) -> str:
-    base = re.sub(r"[^0-9A-Za-z_]", "_", f"{prefix}_{value}")
+    short_value = os.path.basename(value) or value
+    short_value = re.sub(r"\.z\.so$", "", short_value)
+    short_value = re.sub(r"\.so$", "", short_value)
+    short_value = re.sub(r"\.dll$", "", short_value)
+    short_value = re.sub(r"\.dylib$", "", short_value)
+    short_value = re.sub(r"^lib_", "", short_value)
+    short_value = re.sub(r"^lib", "", short_value)
+    short_value = re.sub(r"[^0-9A-Za-z_]", "_", short_value)
+    short_value = re.sub(r"_+", "_", short_value).strip("_")
+    base = re.sub(r"[^0-9A-Za-z_]", "_", f"{prefix}_{short_value}")
     if not base:
         base = prefix
     candidate = base
@@ -907,28 +916,21 @@ def build_import_mermaid_flowchart(import_analysis: dict, process_name: str) -> 
         node_id = mermaid_node_id("lib", lib_path, used_ids)
         path_to_node[lib_path] = node_id
         label = mermaid_label_for_path(lib_path)
-        import_kind = row.get("ImportKind", "")
-        if import_kind:
-            label = f"{label}\\n({import_kind})"
         lines.append(f'    {node_id}["{label}"]')
 
     seen_edges: set[tuple[str, str, str]] = set()
     for edge in edges:
         importer = edge.get("ImporterPath", "")
         target = edge.get("TargetPath", "")
-        needed_name = (edge.get("NeededName", "") or "").replace('"', "'")
         importer_id = path_to_node.get(importer)
         target_id = path_to_node.get(target)
         if not importer_id or not target_id:
             continue
-        edge_key = (importer_id, target_id, needed_name)
+        edge_key = (importer_id, target_id, "")
         if edge_key in seen_edges:
             continue
         seen_edges.add(edge_key)
-        if needed_name:
-            lines.append(f'    {importer_id} -->|"{needed_name}"| {target_id}')
-        else:
-            lines.append(f"    {importer_id} --> {target_id}")
+        lines.append(f"    {importer_id} --> {target_id}")
 
     if len(lines) == 1:
         lines.append('    empty["No dependency edges found"]')
