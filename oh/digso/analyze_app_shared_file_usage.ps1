@@ -22,6 +22,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $RunTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$DefaultOutputRoot = "D:/digso_logs"
 
 function Write-Info {
     param([string]$Message)
@@ -344,7 +345,7 @@ function Read-ProcessFileUsage {
 $processName = Get-RemoteProcessName -HdcPath $Hdc -DeviceId $Device -ProcessId $TargetPid
 
 if (-not $OutputDir) {
-    $OutputDir = Join-Path (Get-Location) "shared_file_usage_${processName}_${TargetPid}_$RunTimestamp"
+    $OutputDir = Join-Path $DefaultOutputRoot "shared_file_usage_${processName}_${TargetPid}_$RunTimestamp"
 }
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 

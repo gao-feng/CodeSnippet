@@ -8,6 +8,13 @@ It works on both Windows and Linux as long as:
 - `hdc` is available in `PATH` when you use capture commands
 - The target device exposes the same `/proc`, `ps`, `lsof`, and `hidumper` commands expected by the old scripts
 
+By default, commands that generate reports now write into:
+
+- Windows: `D:/digso_logs`
+- Linux: `/data/digso_logs`
+
+You can still override the destination with `--output-dir` in Python or `-OutputDir` in the PowerShell scripts.
+
 ## Commands
 
 Analyze one process and generate file-backed memory reports:
@@ -57,3 +64,5 @@ python oh/digso/digso.py force-swapout-memcg 12345
 - The old `.ps1` scripts are still present for reference, but the `.bat` entrypoints now call the Python CLI.
 - Python cache files under `oh/digso/__pycache__/` are ignored by Git.
 - For device selection, use `--device <serial>` on the capture commands.
+- If you do not pass an output directory, each run creates a timestamped subdirectory under the platform default log root.
+- The `.bat` wrappers also accept an optional trailing output-directory argument, for example `run_compare_so_snapshots.bat before after D:/custom_logs`.

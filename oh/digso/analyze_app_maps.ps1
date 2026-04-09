@@ -26,6 +26,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $RunTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$DefaultOutputRoot = "D:/digso_logs"
 
 function Write-Info {
     param([string]$Message)
@@ -425,11 +426,12 @@ if ($PSCmdlet.ParameterSetName -eq "Capture") {
 
 if (-not $OutputDir) {
     if ($PSCmdlet.ParameterSetName -eq "Capture") {
-        $OutputDir = Join-Path (Get-Location) "proc_${ProcessName}_${TargetPid}_$RunTimestamp"
+        $OutputDir = Join-Path $DefaultOutputRoot "proc_${ProcessName}_${TargetPid}_$RunTimestamp"
     } elseif ($SourceDir) {
-        $OutputDir = $SourceDir
+        $sourceLabel = Get-SafePathName -Name (Split-Path -Leaf $SourceDir)
+        $OutputDir = Join-Path $DefaultOutputRoot "analyze_app_maps_${sourceLabel}_$RunTimestamp"
     } else {
-        $OutputDir = Get-Location
+        $OutputDir = Join-Path $DefaultOutputRoot "analyze_app_maps_$RunTimestamp"
     }
 }
 

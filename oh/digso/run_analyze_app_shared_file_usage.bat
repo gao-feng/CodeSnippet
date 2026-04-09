@@ -24,6 +24,11 @@ if "%~1"=="" (
   set "TARGET_PID=%~1"
 )
 
-python "%PY_SCRIPT%" analyze-app-shared-file-usage %TARGET_PID%
+set "OUTPUT_ARG="
+if not "%~2"=="" (
+  set "OUTPUT_ARG= --output-dir ""%~2"""
+)
+
+python "%PY_SCRIPT%" analyze-app-shared-file-usage %TARGET_PID%%OUTPUT_ARG%
 
 exit /b %errorlevel%

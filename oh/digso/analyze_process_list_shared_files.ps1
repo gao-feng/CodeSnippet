@@ -22,6 +22,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $RunTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$DefaultOutputRoot = "D:/digso_logs"
 
 trap {
     Write-Host ""
@@ -440,7 +441,7 @@ if (-not $requestedProcessNames -or $requestedProcessNames.Count -eq 0) {
 
 $outputLabel = Get-SafePathName -Name ([System.IO.Path]::GetFileNameWithoutExtension($ProcessListFile))
 if (-not $OutputDir) {
-    $OutputDir = Join-Path (Get-Location) "process_list_shared_files_${outputLabel}_$RunTimestamp"
+    $OutputDir = Join-Path $DefaultOutputRoot "process_list_shared_files_${outputLabel}_$RunTimestamp"
 }
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null

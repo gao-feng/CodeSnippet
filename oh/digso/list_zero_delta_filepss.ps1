@@ -23,6 +23,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $RunTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$DefaultOutputRoot = "D:/digso_logs"
 
 function Write-Info {
     param([string]$Message)
@@ -111,7 +112,7 @@ $MemoryDir = (Resolve-Path -LiteralPath $MemoryDir).Path
 if (-not $OutputDir) {
     $compareName = Get-SafePathName -Name (Split-Path -Leaf $CompareDir)
     $memoryName = Get-SafePathName -Name (Split-Path -Leaf $MemoryDir)
-    $OutputDir = Join-Path (Get-Location) "zero_delta_lookup_${compareName}_vs_${memoryName}_$RunTimestamp"
+    $OutputDir = Join-Path $DefaultOutputRoot "zero_delta_lookup_${compareName}_vs_${memoryName}_$RunTimestamp"
 }
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 

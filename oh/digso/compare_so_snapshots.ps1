@@ -22,6 +22,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$DefaultOutputRoot = "D:/digso_logs"
 
 function Write-Info {
     param([string]$Message)
@@ -403,7 +404,7 @@ if (-not $OutputDir) {
     $procIdLabel = if ($beforeMeta.Pid -gt 0) { $beforeMeta.Pid } else { "unknown" }
     $beforeTs = if ($beforeMeta.Timestamp) { $beforeMeta.Timestamp } else { "before" }
     $afterTs = if ($afterMeta.Timestamp) { $afterMeta.Timestamp } else { "after" }
-    $OutputDir = Join-Path (Get-Location) "compare_files_${name}_${procIdLabel}_${beforeTs}_vs_${afterTs}"
+    $OutputDir = Join-Path $DefaultOutputRoot "compare_files_${name}_${procIdLabel}_${beforeTs}_vs_${afterTs}"
 }
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null

@@ -24,10 +24,15 @@ if "%~1"=="" (
   set "ARG1=%~1"
 )
 
+set "OUTPUT_ARG="
+if not "%~2"=="" (
+  set "OUTPUT_ARG= --output-dir ""%~2"""
+)
+
 if exist "%ARG1%\\smaps" (
-  python "%PY_SCRIPT%" analyze-app-maps --source-dir "%ARG1%"
+  python "%PY_SCRIPT%" analyze-app-maps --source-dir "%ARG1%"%OUTPUT_ARG%
 ) else (
-  python "%PY_SCRIPT%" analyze-app-maps --target-pid %ARG1%
+  python "%PY_SCRIPT%" analyze-app-maps --target-pid %ARG1%%OUTPUT_ARG%
 )
 
 exit /b %errorlevel%

@@ -24,6 +24,11 @@ if "%~1"=="" (
   set "ARG1=%~1"
 )
 
-python "%PY_SCRIPT%" analyze-process-list-shared-files "%ARG1%"
+set "OUTPUT_ARG="
+if not "%~2"=="" (
+  set "OUTPUT_ARG= --output-dir ""%~2"""
+)
+
+python "%PY_SCRIPT%" analyze-process-list-shared-files "%ARG1%"%OUTPUT_ARG%
 
 exit /b %errorlevel%

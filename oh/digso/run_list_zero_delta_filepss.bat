@@ -35,6 +35,11 @@ if "%~2"=="" (
   set "ARG2=%~2"
 )
 
-python "%PY_SCRIPT%" list-zero-delta-filepss "%ARG1%" "%ARG2%"
+set "OUTPUT_ARG="
+if not "%~3"=="" (
+  set "OUTPUT_ARG= --output-dir ""%~3"""
+)
+
+python "%PY_SCRIPT%" list-zero-delta-filepss "%ARG1%" "%ARG2%"%OUTPUT_ARG%
 
 exit /b %errorlevel%

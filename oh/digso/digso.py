@@ -26,7 +26,6 @@ METRIC_KEYS = (
     "Swap",
 )
 
-
 class DigsoError(RuntimeError):
     pass
 
@@ -50,6 +49,12 @@ def safe_name(name: str | None) -> str:
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def default_output_root() -> Path:
+    if os.name == "nt":
+        return ensure_dir(Path("D:/digso_logs"))
+    return ensure_dir(Path("/data/digso_logs"))
 
 
 def read_text(path: Path) -> str:
@@ -524,11 +529,11 @@ def cmd_analyze_app_maps(args: argparse.Namespace) -> int:
     if args.output_dir:
         output_dir = Path(args.output_dir)
     elif args.target_pid is not None:
-        output_dir = Path.cwd() / f"proc_{process_name}_{args.target_pid}_{now_stamp()}"
+        output_dir = default_output_root() / f"proc_{process_name}_{args.target_pid}_{now_stamp()}"
     elif args.source_dir:
-        output_dir = Path(args.source_dir)
+        output_dir = default_output_root() / f"analyze_app_maps_{safe_name(Path(args.source_dir).name)}_{now_stamp()}"
     else:
-        output_dir = Path.cwd()
+        output_dir = default_output_root() / f"analyze_app_maps_{now_stamp()}"
     input_dir = Path(args.source_dir) if args.source_dir else output_dir
     if args.target_pid is not None:
         save_proc_files(client, args.target_pid, output_dir)
@@ -577,7 +582,7 @@ def cmd_analyze_app_shared_file_usage(args: argparse.Namespace) -> int:
     client = HdcClient(args.hdc, args.device)
     run_timestamp = now_stamp()
     process_name = client.get_process_name(args.target_pid)
-    output_dir = Path(args.output_dir) if args.output_dir else Path.cwd() / f"shared_file_usage_{process_name}_{args.target_pid}_{run_timestamp}"
+    output_dir = Path(args.output_dir) if args.output_dir else default_output_root() / f"shared_file_usage_{process_name}_{args.target_pid}_{run_timestamp}"
     raw_dir = ensure_dir(output_dir / "raw")
     smaps_dir = ensure_dir(output_dir / "proc_smaps")
 
@@ -711,7 +716,7 @@ def cmd_analyze_process_list_shared_files(args: argparse.Namespace) -> int:
         raise DigsoError(f"No process names found in {process_list_file}")
 
     output_label = safe_name(process_list_file.stem)
-    output_dir = Path(args.output_dir) if args.output_dir else Path.cwd() / f"process_list_shared_files_{output_label}_{now_stamp()}"
+    output_dir = Path(args.output_dir) if args.output_dir else default_output_root() / f"process_list_shared_files_{output_label}_{now_stamp()}"
     raw_dir = ensure_dir(output_dir / "raw")
     target_maps_dir = ensure_dir(output_dir / "target_maps")
     target_smaps_dir = ensure_dir(output_dir / "target_smaps")
@@ -962,7 +967,7 @@ def cmd_compare_so_snapshots(args: argparse.Namespace) -> int:
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
-        output_dir = Path.cwd() / f"compare_files_{safe_name(before_meta['ProcessName'] or 'unknown')}_{before_meta['Pid'] or 'unknown'}_{before_meta['Timestamp'] or 'before'}_vs_{after_meta['Timestamp'] or 'after'}"
+        output_dir = default_output_root() / f"compare_files_{safe_name(before_meta['ProcessName'] or 'unknown')}_{before_meta['Pid'] or 'unknown'}_{before_meta['Timestamp'] or 'before'}_vs_{after_meta['Timestamp'] or 'after'}"
     ensure_dir(output_dir)
 
     before_snapshot = rows_from_snapshot_dir(before_dir)
@@ -1029,7 +1034,7 @@ def cmd_compare_so_snapshots(args: argparse.Namespace) -> int:
 def cmd_list_zero_delta_filepss(args: argparse.Namespace) -> int:
     compare_dir = Path(args.compare_dir).resolve()
     memory_dir = Path(args.memory_dir).resolve()
-    output_dir = Path(args.output_dir) if args.output_dir else Path.cwd() / f"zero_delta_filepss_{safe_name(compare_dir.name)}_vs_{safe_name(memory_dir.name)}_{now_stamp()}"
+    output_dir = Path(args.output_dir) if args.output_dir else default_output_root() / f"zero_delta_filepss_{safe_name(compare_dir.name)}_vs_{safe_name(memory_dir.name)}_{now_stamp()}"
     ensure_dir(output_dir)
 
     compare_json = latest_file(compare_dir, "compare_so_*.json") or latest_file(compare_dir, "compare_files_*.json")
