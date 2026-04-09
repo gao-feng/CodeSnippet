@@ -794,6 +794,76 @@ def analyze_library_import_sources(files: list[dict], process_exe: str, export_r
     }
 
 
+def mermaid_node_id(prefix: str, value: str, used_ids: set[str]) -> str:
+    base = re.sub(r"[^0-9A-Za-z_]", "_", f"{prefix}_{value}")
+    if not base:
+        base = prefix
+    candidate = base
+    index = 2
+    while candidate in used_ids:
+        candidate = f"{base}_{index}"
+        index += 1
+    used_ids.add(candidate)
+    return candidate
+
+
+def mermaid_label_for_path(path: str) -> str:
+    base = os.path.basename(path) or path or "unknown"
+    return base.replace('"', "'")
+
+
+def build_import_mermaid_flowchart(import_analysis: dict, process_name: str) -> str:
+    edges = import_analysis.get("Edges", [])
+    libraries = import_analysis.get("Libraries", [])
+    process_exe = import_analysis.get("ProcessExe", "")
+    used_ids: set[str] = set()
+    path_to_node: dict[str, str] = {}
+    lines = ["flowchart LR"]
+
+    if process_exe:
+        exe_node = mermaid_node_id("exe", process_exe, used_ids)
+        path_to_node[process_exe] = exe_node
+        exe_label = mermaid_label_for_path(process_exe)
+        if process_name:
+            exe_label = f"{process_name}\\n{exe_label}"
+        lines.append(f'    {exe_node}["{exe_label}"]')
+
+    for row in libraries:
+        lib_path = row.get("FilePath", "")
+        if not lib_path:
+            continue
+        node_id = mermaid_node_id("lib", lib_path, used_ids)
+        path_to_node[lib_path] = node_id
+        label = mermaid_label_for_path(lib_path)
+        import_kind = row.get("ImportKind", "")
+        if import_kind:
+            label = f"{label}\\n({import_kind})"
+        lines.append(f'    {node_id}["{label}"]')
+
+    seen_edges: set[tuple[str, str, str]] = set()
+    for edge in edges:
+        importer = edge.get("ImporterPath", "")
+        target = edge.get("TargetPath", "")
+        needed_name = (edge.get("NeededName", "") or "").replace('"', "'")
+        importer_id = path_to_node.get(importer)
+        target_id = path_to_node.get(target)
+        if not importer_id or not target_id:
+            continue
+        edge_key = (importer_id, target_id, needed_name)
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        if needed_name:
+            lines.append(f'    {importer_id} -->|"{needed_name}"| {target_id}')
+        else:
+            lines.append(f"    {importer_id} --> {target_id}")
+
+    if len(lines) == 1:
+        lines.append('    empty["No dependency edges found"]')
+
+    return "\n".join(lines) + "\n"
+
+
 def cmd_analyze_app_maps(args: argparse.Namespace) -> int:
     process_name = ""
     process_exe = ""
@@ -858,8 +928,10 @@ def cmd_analyze_app_maps(args: argparse.Namespace) -> int:
         import_analysis = analyze_library_import_sources(analysis["Files"], process_exe, export_root, manifest)
         import_csv_path = output_dir / f"{report_name}.imports.csv"
         import_json_path = output_dir / f"{report_name}.imports.json"
+        import_mermaid_path = output_dir / f"{report_name}.imports.mmd"
         write_csv(import_csv_path, import_analysis["Libraries"])
         write_json(import_json_path, import_analysis)
+        write_text(import_mermaid_path, build_import_mermaid_flowchart(import_analysis, process_name))
 
     write_csv(csv_path, analysis["Files"])
     report = {
@@ -894,6 +966,7 @@ def cmd_analyze_app_maps(args: argparse.Namespace) -> int:
         summary_rows.append(("ELF export root", import_analysis["ExportRoot"]))
         summary_rows.append(("Import CSV", import_csv_path))
         summary_rows.append(("Import JSON", import_json_path))
+        summary_rows.append(("Import Mermaid", import_mermaid_path))
     print_kv("File memory summary", summary_rows)
     for row in analysis["Files"][:30]:
         print(f"{row['FileName']}\t{row['FileType']}\tlib={row['IsLibrary']}\tTotalPssKB={row['TotalPssKB']}\tTotalRssKB={row['TotalRssKB']}\t{row['FilePath']}")
