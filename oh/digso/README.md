@@ -23,6 +23,20 @@ Analyze one process and generate file-backed memory reports:
 python oh/digso/digso.py analyze-app-maps --target-pid 12345
 ```
 
+Pagemap analysis is disabled by default because it is expensive on processes
+with large `maps` files. Enable it explicitly when needed:
+
+```bash
+python oh/digso/digso.py analyze-app-maps --target-pid 12345 --analyze-pagemap
+```
+
+When enabled, the command analyzes `/proc/<pid>/pagemap` by each
+`/proc/<pid>/maps` range. It writes `map_pagemap_*.summary.csv` for per-map
+present/swap/not-mapped counts and `map_pagemap_*.ranges.csv` for continuous VA
+ranges. Remote pagemap reads merge nearby map ranges first to reduce
+`dd + file recv` round trips. If the kernel masks PFNs for the current user, the
+report can still show present/swap state, but `StartPA`/`EndPA` may be empty.
+
 Enable library import-source analysis for the same flow:
 
 ```bash

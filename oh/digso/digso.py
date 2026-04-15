@@ -360,9 +360,286 @@ def parse_maps(path: Path) -> list[dict]:
         parts = re.split(r"\s+", line, maxsplit=5)
         pathname = parts[5].strip() if len(parts) >= 6 else ""
         header_parts = [part for part in re.split(r"\s+", line.strip()) if part]
+        address = header_parts[0] if len(header_parts) >= 1 else "0-0"
+        start_text, end_text = address.split("-", 1) if "-" in address else ("0", "0")
+        start = int(start_text, 16)
+        end = int(end_text, 16)
+        perms = header_parts[1] if len(header_parts) >= 2 else ""
+        offset = int(header_parts[2], 16) if len(header_parts) >= 3 else 0
+        dev = header_parts[3] if len(header_parts) >= 4 else ""
         inode = int(header_parts[4]) if len(header_parts) >= 5 and header_parts[4].isdigit() else 0
-        rows.append({"path": pathname, "inode": inode, "header": line})
+        rows.append(
+            {
+                "start": start,
+                "end": end,
+                "perms": perms,
+                "offset": offset,
+                "dev": dev,
+                "path": pathname,
+                "inode": inode,
+                "header": line,
+            }
+        )
     return rows
+
+
+def hex_addr(value: int | None) -> str:
+    if value is None:
+        return ""
+    return f"0x{value:x}"
+
+
+def parse_page_size(client: HdcClient | None = None) -> int:
+    if client is not None:
+        for command in ("getconf PAGESIZE", "getconf PAGE_SIZE"):
+            try:
+                value = client.shell(command).strip()
+                if value.isdigit() and int(value) > 0:
+                    return int(value)
+            except DigsoError:
+                pass
+    return os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+
+
+def decode_pagemap_entry(raw_value: int, page_size: int) -> dict:
+    present = bool(raw_value & (1 << 63))
+    swapped = bool(raw_value & (1 << 62))
+    pfn = raw_value & ((1 << 55) - 1)
+    swap_type = raw_value & 0x1F
+    swap_offset = (raw_value >> 5) & ((1 << 50) - 1)
+    pa = pfn * page_size if present and pfn > 0 else None
+    return {
+        "Raw": raw_value,
+        "Status": "present" if present else ("swap" if swapped else "none"),
+        "Present": present,
+        "Swapped": swapped,
+        "FileOrShared": bool(raw_value & (1 << 61)),
+        "Exclusive": bool(raw_value & (1 << 56)),
+        "SoftDirty": bool(raw_value & (1 << 55)),
+        "Pfn": pfn if present and pfn > 0 else None,
+        "Pa": pa,
+        "SwapType": swap_type if swapped else None,
+        "SwapOffset": swap_offset if swapped else None,
+    }
+
+
+def pagemap_entries_from_bytes(blob: bytes, page_size: int) -> list[dict]:
+    entry_count = len(blob) // 8
+    return [decode_pagemap_entry(struct.unpack_from("<Q", blob, index * 8)[0], page_size) for index in range(entry_count)]
+
+
+def same_pagemap_range(previous: dict, current: dict, expected_va: int, page_size: int) -> bool:
+    if previous["Status"] != current["Status"]:
+        return False
+    if previous["EndVA"] != expected_va:
+        return False
+    if current["Status"] == "present":
+        previous_end_pa = previous.get("EndPA")
+        current_start_pa = current.get("StartPA")
+        if previous_end_pa is None or current_start_pa is None:
+            return previous_end_pa is None and current_start_pa is None
+        return previous_end_pa == current_start_pa
+    if current["Status"] == "swap":
+        return (
+            previous.get("SwapType") == current.get("SwapType")
+            and previous.get("SwapEndOffset") == current.get("SwapStartOffset")
+        )
+    return True
+
+
+def append_pagemap_range(ranges: list[dict], map_row: dict, page_index: int, page_size: int, decoded: dict) -> None:
+    va = map_row["start"] + page_index * page_size
+    row = {
+        "MapIndex": map_row["MapIndex"],
+        "Path": map_row["path"],
+        "Perms": map_row["perms"],
+        "Status": decoded["Status"],
+        "StartVA": va,
+        "EndVA": va + page_size,
+        "StartPA": decoded["Pa"],
+        "EndPA": decoded["Pa"] + page_size if decoded["Pa"] is not None else None,
+        "SwapType": decoded["SwapType"],
+        "SwapStartOffset": decoded["SwapOffset"],
+        "SwapEndOffset": decoded["SwapOffset"] + 1 if decoded["SwapOffset"] is not None else None,
+        "Pages": 1,
+    }
+    if ranges and ranges[-1]["MapIndex"] == row["MapIndex"] and same_pagemap_range(ranges[-1], row, va, page_size):
+        ranges[-1]["EndVA"] = row["EndVA"]
+        ranges[-1]["EndPA"] = row["EndPA"]
+        ranges[-1]["SwapEndOffset"] = row["SwapEndOffset"]
+        ranges[-1]["Pages"] += 1
+    else:
+        ranges.append(row)
+
+
+def finalize_pagemap_range_rows(ranges: list[dict]) -> list[dict]:
+    rows = []
+    for row in ranges:
+        rows.append(
+            {
+                "MapIndex": row["MapIndex"],
+                "StartVA": hex_addr(row["StartVA"]),
+                "EndVA": hex_addr(row["EndVA"]),
+                "SizeKB": (row["EndVA"] - row["StartVA"]) // 1024,
+                "Pages": row["Pages"],
+                "Status": row["Status"],
+                "StartPA": hex_addr(row["StartPA"]),
+                "EndPA": hex_addr(row["EndPA"]),
+                "SwapType": "" if row["SwapType"] is None else row["SwapType"],
+                "SwapStartOffset": "" if row["SwapStartOffset"] is None else row["SwapStartOffset"],
+                "SwapEndOffset": "" if row["SwapEndOffset"] is None else row["SwapEndOffset"],
+                "Perms": row["Perms"],
+                "Path": row["Path"],
+            }
+        )
+    return rows
+
+
+def summarize_pagemap_for_maps(
+    maps: list[dict],
+    page_size: int,
+    read_entries,
+    max_chunk_pages: int = 65536,
+) -> dict:
+    summary_rows = []
+    range_rows = []
+
+    for map_index, map_row in enumerate(maps):
+        map_row = dict(map_row)
+        map_row["MapIndex"] = map_index
+        page_count = max(0, (map_row["end"] - map_row["start"] + page_size - 1) // page_size)
+        row = {
+            "MapIndex": map_index,
+            "StartVA": hex_addr(map_row["start"]),
+            "EndVA": hex_addr(map_row["end"]),
+            "SizeKB": (map_row["end"] - map_row["start"]) // 1024,
+            "Pages": page_count,
+            "Perms": map_row["perms"],
+            "Offset": hex_addr(map_row["offset"]),
+            "Dev": map_row["dev"],
+            "Inode": map_row["inode"],
+            "Path": map_row["path"],
+            "PresentPages": 0,
+            "SwappedPages": 0,
+            "NotMappedPages": 0,
+            "FileOrSharedPages": 0,
+            "ExclusivePages": 0,
+            "SoftDirtyPages": 0,
+            "PaKnownPages": 0,
+            "HasPresent": False,
+            "HasPA": False,
+            "HasKnownPA": False,
+            "HasSwap": False,
+            "FirstPresentVA": "",
+            "FirstKnownPA": "",
+            "FirstSwapVA": "",
+            "FirstSwapType": "",
+            "FirstSwapOffset": "",
+            "Status": "ok",
+            "Error": "",
+        }
+
+        try:
+            consumed = 0
+            while consumed < page_count:
+                chunk_pages = min(max_chunk_pages, page_count - consumed)
+                start_vpn = (map_row["start"] // page_size) + consumed
+                blob = read_entries(start_vpn, chunk_pages)
+                entries = pagemap_entries_from_bytes(blob, page_size)
+                if len(entries) != chunk_pages:
+                    raise DigsoError(f"short pagemap read: expected {chunk_pages} entries, got {len(entries)}")
+                for offset, decoded in enumerate(entries):
+                    page_index = consumed + offset
+                    va = map_row["start"] + page_index * page_size
+                    if decoded["Present"]:
+                        row["PresentPages"] += 1
+                        row["HasPresent"] = True
+                        if not row["FirstPresentVA"]:
+                            row["FirstPresentVA"] = hex_addr(va)
+                    elif decoded["Swapped"]:
+                        row["SwappedPages"] += 1
+                        row["HasSwap"] = True
+                        if not row["FirstSwapVA"]:
+                            row["FirstSwapVA"] = hex_addr(va)
+                            row["FirstSwapType"] = decoded["SwapType"]
+                            row["FirstSwapOffset"] = decoded["SwapOffset"]
+                    else:
+                        row["NotMappedPages"] += 1
+                    if decoded["FileOrShared"]:
+                        row["FileOrSharedPages"] += 1
+                    if decoded["Exclusive"]:
+                        row["ExclusivePages"] += 1
+                    if decoded["SoftDirty"]:
+                        row["SoftDirtyPages"] += 1
+                    if decoded["Pa"] is not None:
+                        row["PaKnownPages"] += 1
+                        row["HasPA"] = True
+                        row["HasKnownPA"] = True
+                        if not row["FirstKnownPA"]:
+                            row["FirstKnownPA"] = hex_addr(decoded["Pa"])
+                    append_pagemap_range(range_rows, map_row, page_index, page_size, decoded)
+                consumed += chunk_pages
+        except Exception as exc:
+            row["Status"] = "error"
+            row["Error"] = str(exc)
+        summary_rows.append(row)
+
+    return {"Summary": summary_rows, "Ranges": finalize_pagemap_range_rows(range_rows)}
+
+
+def build_pagemap_read_ranges(
+    maps: list[dict],
+    page_size: int,
+    merge_gap_pages: int,
+    max_chunk_pages: int,
+) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    current_start: int | None = None
+    current_end: int | None = None
+
+    for map_row in sorted(maps, key=lambda item: (item["start"], item["end"])):
+        start_vpn = map_row["start"] // page_size
+        end_vpn = (map_row["end"] + page_size - 1) // page_size
+        if end_vpn <= start_vpn:
+            continue
+
+        while end_vpn - start_vpn > max_chunk_pages:
+            split_end = start_vpn + max_chunk_pages
+            if current_start is not None and current_end is not None:
+                ranges.append((current_start, current_end - current_start))
+                current_start = None
+                current_end = None
+            ranges.append((start_vpn, max_chunk_pages))
+            start_vpn = split_end
+
+        if current_start is None or current_end is None:
+            current_start = start_vpn
+            current_end = end_vpn
+            continue
+
+        merged_end = max(current_end, end_vpn)
+        can_merge = start_vpn <= current_end + merge_gap_pages and merged_end - current_start <= max_chunk_pages
+        if can_merge:
+            current_end = merged_end
+        else:
+            ranges.append((current_start, current_end - current_start))
+            current_start = start_vpn
+            current_end = end_vpn
+
+    if current_start is not None and current_end is not None:
+        ranges.append((current_start, current_end - current_start))
+
+    return ranges
+
+
+def analyze_local_pagemap(maps_path: Path, pagemap_path: Path, page_size: int) -> dict:
+    maps = parse_maps(maps_path)
+    with pagemap_path.open("rb") as handle:
+        def read_entries(start_vpn: int, page_count: int) -> bytes:
+            handle.seek(start_vpn * 8)
+            return handle.read(page_count * 8)
+
+        return summarize_pagemap_for_maps(maps, page_size, read_entries)
 
 
 def file_identity_key(path: str, inode: int) -> str:
@@ -627,6 +904,58 @@ def save_proc_smaps(client: HdcClient, pid: int, local_path: Path, suffix: str) 
 
 def save_proc_maps(client: HdcClient, pid: int, local_path: Path, suffix: str) -> None:
     client.save_remote_text_file(f"/proc/{pid}/maps", local_path, f"/data/{pid}_{suffix}")
+
+
+def analyze_remote_pagemap(
+    client: HdcClient,
+    pid: int,
+    maps_path: Path,
+    output_dir: Path,
+    page_size: int,
+    merge_gap_kb: int,
+) -> dict:
+    maps = parse_maps(maps_path)
+    chunk_dir = ensure_dir(output_dir / "pagemap_chunks")
+    max_chunk_pages = 65536
+    merge_gap_pages = max(0, (merge_gap_kb * 1024 + page_size - 1) // page_size)
+    read_ranges = build_pagemap_read_ranges(maps, page_size, merge_gap_pages, max_chunk_pages)
+    cached_chunks: list[tuple[int, int, bytes]] = []
+
+    info(f"Reading pagemap in {len(read_ranges)} merged chunk(s), merge gap <= {merge_gap_kb} KB")
+    for index, (start_vpn, page_count) in enumerate(read_ranges, start=1):
+        remote_temp = f"/data/{pid}_pagemap_{start_vpn}_{page_count}.bin"
+        local_temp = chunk_dir / f"pagemap_{start_vpn}_{page_count}.bin"
+        try:
+            info(f"Reading pagemap chunk {index}/{len(read_ranges)}: vpn={start_vpn}, pages={page_count}")
+            client.shell(
+                f"dd if=/proc/{pid}/pagemap of={remote_temp} bs=8 skip={start_vpn} count={page_count} 2>/dev/null"
+            )
+            client.recv(remote_temp, local_temp)
+            blob = local_temp.read_bytes()
+            if len(blob) != page_count * 8:
+                raise DigsoError(f"short pagemap read: expected {page_count * 8} bytes, got {len(blob)}")
+            cached_chunks.append((start_vpn, page_count, blob))
+        finally:
+            try:
+                client.shell(f"rm -f {remote_temp}")
+            except DigsoError:
+                pass
+            try:
+                local_temp.unlink()
+            except FileNotFoundError:
+                pass
+
+    def read_entries(start_vpn: int, page_count: int) -> bytes:
+        end_vpn = start_vpn + page_count
+        for chunk_start, chunk_pages, blob in cached_chunks:
+            chunk_end = chunk_start + chunk_pages
+            if chunk_start <= start_vpn and end_vpn <= chunk_end:
+                byte_start = (start_vpn - chunk_start) * 8
+                byte_end = byte_start + page_count * 8
+                return blob[byte_start:byte_end]
+        raise DigsoError(f"pagemap range not cached: vpn={start_vpn}, pages={page_count}")
+
+    return summarize_pagemap_for_maps(maps, page_size, read_entries, max_chunk_pages=max_chunk_pages)
 
 
 def print_kv(title: str, rows: list[tuple[str, object]]) -> None:
@@ -941,11 +1270,14 @@ def build_import_mermaid_flowchart(import_analysis: dict, process_name: str) -> 
 def cmd_analyze_app_maps(args: argparse.Namespace) -> int:
     process_name = ""
     process_exe = ""
+    process_page_size = None
     import_analysis = None
     if args.target_pid is not None:
         client = HdcClient(args.hdc, args.device)
         process_name = client.get_process_name(args.target_pid)
         process_exe = client.get_process_exe(args.target_pid)
+        if args.analyze_pagemap:
+            process_page_size = parse_page_size(client)
     if args.output_dir:
         output_dir = Path(args.output_dir)
     elif args.target_pid is not None:
@@ -963,6 +1295,7 @@ def cmd_analyze_app_maps(args: argparse.Namespace) -> int:
                 "ProcessName": process_name,
                 "TargetPid": args.target_pid,
                 "ProcessExe": process_exe,
+                "PageSize": process_page_size,
             },
         )
     else:
@@ -971,9 +1304,11 @@ def cmd_analyze_app_maps(args: argparse.Namespace) -> int:
             process_info = json.loads(read_text(process_info_path))
             process_name = process_info.get("ProcessName", process_name)
             process_exe = process_info.get("ProcessExe", "")
+            process_page_size = process_info.get("PageSize")
 
     smaps_path = input_dir / "smaps"
     rollup_path = input_dir / "smaps_rollup"
+    maps_path = input_dir / "maps"
     if not smaps_path.exists() or not rollup_path.exists():
         raise DigsoError(f"Required file not found in {input_dir}")
 
@@ -981,9 +1316,49 @@ def cmd_analyze_app_maps(args: argparse.Namespace) -> int:
     info(f"Parsing {smaps_path}")
     analysis = analyze_file_mappings(parse_smaps(smaps_path))
     rollup = parse_rollup(rollup_path)
+    pagemap_analysis = None
     report_name = f"file_memory_{process_name}_{now_stamp()}" if process_name else f"file_memory_{now_stamp()}"
     csv_path = output_dir / f"{report_name}.csv"
     json_path = output_dir / f"{report_name}.json"
+    pagemap_report_name = f"map_pagemap_{process_name}_{now_stamp()}" if process_name else f"map_pagemap_{now_stamp()}"
+    pagemap_summary_path = output_dir / f"{pagemap_report_name}.summary.csv"
+    pagemap_ranges_path = output_dir / f"{pagemap_report_name}.ranges.csv"
+    pagemap_json_path = output_dir / f"{pagemap_report_name}.json"
+
+    if args.analyze_pagemap and maps_path.exists():
+        page_size = int(process_page_size or parse_page_size(client if args.target_pid is not None else None))
+        try:
+            if args.target_pid is not None:
+                info(f"Analyzing /proc/{args.target_pid}/pagemap by maps ranges")
+                pagemap_analysis = analyze_remote_pagemap(
+                    client,
+                    args.target_pid,
+                    maps_path,
+                    output_dir,
+                    page_size,
+                    args.pagemap_merge_gap_kb,
+                )
+            else:
+                local_pagemap_path = input_dir / "pagemap"
+                if local_pagemap_path.exists():
+                    info(f"Parsing local pagemap {local_pagemap_path}")
+                    pagemap_analysis = analyze_local_pagemap(maps_path, local_pagemap_path, page_size)
+            if pagemap_analysis is not None:
+                pagemap_payload = {
+                    "SourceDir": str(input_dir),
+                    "ProcessName": process_name,
+                    "TargetPid": args.target_pid,
+                    "PageSize": page_size,
+                    "Summary": pagemap_analysis["Summary"],
+                    "Ranges": pagemap_analysis["Ranges"],
+                }
+                write_csv(pagemap_summary_path, pagemap_analysis["Summary"])
+                write_csv(pagemap_ranges_path, pagemap_analysis["Ranges"])
+                write_json(pagemap_json_path, pagemap_payload)
+        except Exception as exc:
+            print(f"[warn] pagemap analysis failed: {exc}")
+    elif args.analyze_pagemap:
+        print(f"[warn] pagemap analysis requested, but maps file was not found: {maps_path}")
 
     if args.analyze_library_imports:
         export_root = Path(args.elf_dir) if args.elf_dir else default_elf_cache_root()
@@ -1017,6 +1392,13 @@ def cmd_analyze_app_maps(args: argparse.Namespace) -> int:
         "Summary": analysis["Summary"],
         "Files": analysis["Files"],
     }
+    if pagemap_analysis is not None:
+        report["PagemapAnalysis"] = {
+            "PageSize": page_size,
+            "SummaryReport": str(pagemap_summary_path),
+            "RangesReport": str(pagemap_ranges_path),
+            "JsonReport": str(pagemap_json_path),
+        }
     if import_analysis is not None:
         report["ImportAnalysis"] = import_analysis
     write_json(json_path, report)
@@ -1034,8 +1416,20 @@ def cmd_analyze_app_maps(args: argparse.Namespace) -> int:
         ("Tracked total PSS", f"{analysis['Summary']['TotalPssKB']} kB"),
         ("CSV report", csv_path),
         ("JSON report", json_path),
+        ("Pagemap analysis", "enabled" if pagemap_analysis is not None else "disabled"),
         ("Import analysis", "enabled" if import_analysis is not None else "disabled"),
     ]
+    if pagemap_analysis is not None:
+        present_maps = sum(1 for row in pagemap_analysis["Summary"] if row["PresentPages"] > 0)
+        swap_maps = sum(1 for row in pagemap_analysis["Summary"] if row["SwappedPages"] > 0)
+        known_pa_maps = sum(1 for row in pagemap_analysis["Summary"] if row["PaKnownPages"] > 0)
+        summary_rows.append(("Pagemap page size", page_size))
+        summary_rows.append(("Maps with present", present_maps))
+        summary_rows.append(("Maps with known PA", known_pa_maps))
+        summary_rows.append(("Maps with swap", swap_maps))
+        summary_rows.append(("Pagemap summary", pagemap_summary_path))
+        summary_rows.append(("Pagemap ranges", pagemap_ranges_path))
+        summary_rows.append(("Pagemap JSON", pagemap_json_path))
     if import_analysis is not None:
         summary_rows.append(("Import kinds", json.dumps(import_analysis["Summary"], ensure_ascii=False)))
         summary_rows.append(("ELF export root", import_analysis["ExportRoot"]))
@@ -1622,6 +2016,8 @@ def build_parser() -> argparse.ArgumentParser:
     app_maps.add_argument("--output-dir")
     app_maps.add_argument("-I", "--analyze-imports", "--analyze-library-imports", dest="analyze_library_imports", action="store_true")
     app_maps.add_argument("--elf-dir")
+    app_maps.add_argument("--analyze-pagemap", action="store_true", help="analyze /proc/<pid>/pagemap or local pagemap; disabled by default because it can be slow")
+    app_maps.add_argument("--pagemap-merge-gap-kb", type=int, default=16384, help="merge nearby maps ranges before remote pagemap reads; default: 16384")
     app_maps.add_argument("--keep-raw-files", action="store_true")
     app_maps.add_argument("--json", action="store_true")
     app_maps.set_defaults(func=cmd_analyze_app_maps)
