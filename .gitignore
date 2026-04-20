@@ -30,3 +30,9 @@
 !/oh/digso/*.ps1
 !/oh/digso/*.bat
 !/oh/digso/process_list.txt
+
+# oh/harmonyos_skill_builder generated data
+/oh/harmonyos_skill_builder/build/
+/oh/harmonyos_skill_builder/harmonyos_skill_builder/__pycache__/
+/oh/harmonyos_skill_builder/harmonyos_skill_builder/*.pyc
+/oh/harmonyos_skill_builder/harmonyos_skill_builder/*.pyc.*
