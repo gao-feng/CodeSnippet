@@ -6,6 +6,8 @@
 - `references/index.json`：下载页面索引
 - `references/pages/*.md`：由文档页面转换出的 Markdown 参考资料
 
+如果传入 `--summarize-skill`，工具还会调用 OpenAI 兼容的 Chat Completions API，根据已下载页面总结出更具体的 `SKILL.md` 描述、工作流和重点主题。
+
 ## 使用
 
 在仓库根目录运行：
@@ -71,6 +73,40 @@ python -m harmonyos_skill_builder \
 - `--max-pages`：最多下载页面数；默认 `0` 表示下载入口链接对应目录树下的全部文档
 - `--delay`：请求间隔，默认 0.2 秒
 - `--overwrite`：允许覆盖输出目录内的 `SKILL.md` 和 `references`
+
+## 使用 LLM 总结 SKILL.md
+
+开启总结需要 OpenAI 兼容接口。默认读取：
+
+- `OPENAI_API_KEY`：API key
+- `OPENAI_BASE_URL`：接口地址，默认 `https://api.openai.com/v1`
+- `OPENAI_MODEL`：模型名，默认 `gpt-4o-mini`
+
+示例：
+
+```bash
+python -m harmonyos_skill_builder \
+  --start-url https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/deveco-testing \
+  --output-dir build/deveco-testing \
+  --summarize-skill \
+  --llm-model gpt-4o-mini \
+  --overwrite
+```
+
+也可以显式传参：
+
+```bash
+python -m harmonyos_skill_builder \
+  --start-url https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/deveco-testing \
+  --summarize-skill \
+  --llm-api-key "$OPENAI_API_KEY" \
+  --llm-base-url https://api.openai.com/v1 \
+  --llm-model gpt-4o-mini \
+  --llm-max-input-chars 60000 \
+  --overwrite
+```
+
+未传 `--summarize-skill` 时不会调用模型，仍生成原来的模板版 `SKILL.md`。
 
 ## 安装为命令
 

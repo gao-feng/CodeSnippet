@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import posixpath
 import re
 import shutil
@@ -25,6 +26,9 @@ DEFAULT_USER_AGENT = (
     "+https://developer.huawei.com/consumer/cn/doc/harmonyos-guides)"
 )
 DEFAULT_LANGUAGE = "cn"
+DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_LLM_MODEL = "gpt-4o-mini"
+DEFAULT_LLM_MAX_INPUT_CHARS = 60000
 BLOCKED_EXTENSIONS = {
     ".7z",
     ".avi",
@@ -56,6 +60,24 @@ class Page:
     title: str
     markdown: str
     links: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SkillSummary:
+    description: str
+    title: str
+    overview: str
+    workflow: tuple[str, ...]
+    focus_topics: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LlmConfig:
+    api_key: str
+    base_url: str
+    model: str
+    timeout: float
+    max_input_chars: int
 
 
 class LinkExtractor(HTMLParser):
@@ -273,6 +295,49 @@ def post_json(url: str, payload: dict, timeout: float, user_agent: str) -> dict:
     return result
 
 
+def post_openai_chat_completion(config: LlmConfig, messages: list[dict[str, str]]) -> str:
+    endpoint = openai_chat_completions_url(config.base_url)
+    payload = {
+        "model": config.model,
+        "messages": messages,
+        "temperature": 0.2,
+    }
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        endpoint,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=config.timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            text = response.read().decode(charset, errors="replace")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise BuildError(f"LLM API HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise BuildError(f"Unable to call LLM API: {exc.reason}") from exc
+
+    try:
+        result = json.loads(text)
+        content = result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise BuildError(f"Unexpected LLM API response: {text[:500]}") from exc
+    if not isinstance(content, str) or not content.strip():
+        raise BuildError("LLM API returned an empty summary.")
+    return content
+
+
+def openai_chat_completions_url(base_url: str) -> str:
+    base_url = base_url.rstrip("/")
+    if base_url.endswith("/chat/completions"):
+        return base_url
+    return f"{base_url}/chat/completions"
+
+
 def parse_page(url: str, html_text: str) -> Page:
     markdown_parser = MarkdownExtractor(url)
     markdown_parser.feed(html_text)
@@ -485,26 +550,253 @@ def page_filename(page: Page, index: int) -> str:
     return f"{index:03d}-{slug}.md"
 
 
-def render_skill_md(skill_name: str, pages: list[dict[str, str]], start_url: str) -> str:
+def summarize_skill(skill_name: str, pages: list[Page], start_url: str, config: LlmConfig) -> SkillSummary:
+    corpus = build_summary_corpus(pages, max_chars=config.max_input_chars)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You create concise Codex SKILL.md instructions from downloaded technical documentation. "
+                "Use only the supplied source text. Return only one JSON object and no thinking, markdown, "
+                "or explanatory text. The JSON object must have keys: description, title, "
+                "overview, workflow, focus_topics. description must be one sentence under 220 characters. "
+                "workflow must be 4 to 7 short imperative strings. focus_topics must be 3 to 8 short strings."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Skill name: {skill_name}\n"
+                f"Source URL: {start_url}\n\n"
+                "Summarize what this HarmonyOS documentation set is for and how Codex should use the "
+                "downloaded reference files. Prefer English for SKILL.md content, but keep official API "
+                "or product names unchanged.\n\n"
+                f"{corpus}"
+            ),
+        },
+    ]
+    info(f"summarize SKILL.md with {config.model}")
+    content = post_openai_chat_completion(config, messages)
+    data = parse_json_object(content)
+    return normalize_skill_summary(data, skill_name=skill_name, fallback_title=pages[0].title if pages else skill_name)
+
+
+def build_summary_corpus(pages: list[Page], max_chars: int) -> str:
+    if max_chars <= 0:
+        raise BuildError("--llm-max-input-chars must be greater than 0.")
+    if not pages:
+        return ""
+
+    per_page = max(1200, max_chars // max(len(pages), 1))
+    parts: list[str] = []
+    used = 0
+    for index, page in enumerate(pages, start=1):
+        header = f"## Page {index}: {page.title}\nURL: {page.url}\n\n"
+        body_budget = max(400, min(per_page, max_chars - used - len(header)))
+        if body_budget <= 0:
+            break
+        body = trim_text(page.markdown, body_budget)
+        part = f"{header}{body}".strip()
+        parts.append(part)
+        used += len(part) + 2
+        if used >= max_chars:
+            break
+    return "\n\n".join(parts)
+
+
+def trim_text(value: str, max_chars: int) -> str:
+    value = value.strip()
+    if len(value) <= max_chars:
+        return value
+    if max_chars <= 200:
+        return value[:max_chars].rstrip()
+    head = max_chars * 2 // 3
+    tail = max_chars - head - 40
+    return f"{value[:head].rstrip()}\n\n[... omitted ...]\n\n{value[-tail:].lstrip()}"
+
+
+def parse_json_object(value: str) -> dict:
+    text = extract_json_object_text(value)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        for candidate in iter_json_object_candidates(strip_llm_sideband_text(value)):
+            try:
+                data = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return data
+        raise BuildError(f"LLM summary was not valid JSON: {value[:500]}") from exc
+    if not isinstance(data, dict):
+        raise BuildError("LLM summary JSON must be an object.")
+    return data
+
+
+def extract_json_object_text(value: str) -> str:
+    text = strip_llm_sideband_text(value).strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    text = text.strip()
+    if text.startswith("{") and text.endswith("}"):
+        return text
+
+    start = text.find("{")
+    if start < 0:
+        return text
+
+    in_string = False
+    escape = False
+    depth = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return text[start:]
+
+
+def iter_json_object_candidates(value: str) -> Iterable[str]:
+    text = value.strip()
+    for start, char in enumerate(text):
+        if char != "{":
+            continue
+
+        in_string = False
+        escape = False
+        depth = 0
+        for index in range(start, len(text)):
+            current = text[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif current == "\\":
+                    escape = True
+                elif current == '"':
+                    in_string = False
+                continue
+            if current == '"':
+                in_string = True
+            elif current == "{":
+                depth += 1
+            elif current == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[start : index + 1]
+                    break
+
+
+def strip_llm_sideband_text(value: str) -> str:
+    text = re.sub(r"<think\b[^>]*>.*?</think>", "", value, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"^\s*<think\b[^>]*>.*?(?=\{)", "", text, flags=re.IGNORECASE | re.DOTALL)
+    return text
+
+
+def normalize_skill_summary(data: dict, skill_name: str, fallback_title: str) -> SkillSummary:
+    description = clean_inline_text(str(data.get("description") or ""))
+    title = clean_inline_text(str(data.get("title") or fallback_title or skill_name))
+    overview = str(data.get("overview") or "").strip()
+    workflow = tuple(clean_inline_text(str(item)) for item in data.get("workflow") or [] if clean_inline_text(str(item)))
+    focus_topics = tuple(
+        clean_inline_text(str(item)) for item in data.get("focus_topics") or [] if clean_inline_text(str(item))
+    )
+
+    if not description:
+        description = (
+            f"Use when working with HarmonyOS documentation related to {title}; consult the bundled references "
+            "before answering or editing code."
+        )
+    if not overview:
+        overview = (
+            "Use this skill for HarmonyOS work related to the generated documentation set. Prefer the bundled "
+            "references before relying on memory."
+        )
+    if not workflow:
+        workflow = default_workflow()
+
+    return SkillSummary(
+        description=description,
+        title=title,
+        overview=overview,
+        workflow=workflow[:7],
+        focus_topics=focus_topics[:8],
+    )
+
+
+def default_workflow() -> tuple[str, ...]:
+    return (
+        "Identify the HarmonyOS topic in the user request.",
+        "Open `references/index.json` to find matching downloaded pages by title or URL.",
+        "Read only the relevant files under `references/pages/`.",
+        "Apply the documented HarmonyOS pattern, preserving the user's project conventions.",
+        "Mention any uncertainty if the downloaded docs do not cover the requested API or behavior.",
+    )
+
+
+def yaml_double_quote(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def render_skill_md(
+    skill_name: str,
+    pages: list[dict[str, str]],
+    start_url: str,
+    summary: SkillSummary | None = None,
+) -> str:
     toc = "\n".join(f"- `{item['file']}`: {item['title']}" for item in pages)
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    title = pages[0]["title"] if pages else skill_name
+    title = summary.title if summary else pages[0]["title"] if pages else skill_name
+    description = (
+        summary.description
+        if summary
+        else (
+            f"Use when working with HarmonyOS documentation related to {title}. This skill provides local "
+            "references generated from Huawei Developer HarmonyOS docs and tells Agent how to consult them "
+            "before answering questions, editing code, or explaining APIs and development patterns."
+        )
+    )
+    overview = (
+        summary.overview
+        if summary
+        else (
+            "Use this skill for HarmonyOS work related to the generated documentation set. Prefer the bundled "
+            "references before relying on memory, especially for API behavior, version constraints, examples, "
+            "configuration, lifecycle, permissions, and development patterns."
+        )
+    )
+    workflow = summary.workflow if summary else default_workflow()
+    workflow_lines = "\n".join(f"{index}. {step}" for index, step in enumerate(workflow, start=1))
+    focus_section = ""
+    if summary and summary.focus_topics:
+        focus_items = "\n".join(f"- {item}" for item in summary.focus_topics)
+        focus_section = f"\n## Focus Topics\n\n{focus_items}\n"
     return f"""---
 name: {skill_name}
-description: Use when working with HarmonyOS documentation related to {title}. This skill provides local references generated from Huawei Developer HarmonyOS docs and tells Agent how to consult them before answering questions, editing code, or explaining APIs and development patterns.
+description: {yaml_double_quote(description)}
 ---
 
 # HarmonyOS {title}
 
-Use this skill for HarmonyOS work related to the generated documentation set. Prefer the bundled references before relying on memory, especially for API behavior, version constraints, examples, configuration, lifecycle, permissions, and development patterns.
+{overview}
 
 ## Workflow
 
-1. Identify the HarmonyOS topic in the user request.
-2. Open `references/index.json` to find matching downloaded pages by title or URL.
-3. Read only the relevant files under `references/pages/`.
-4. Apply the documented HarmonyOS pattern, preserving the user's project conventions.
-5. Mention any uncertainty if the downloaded docs do not cover the requested API or behavior.
+{workflow_lines}
+{focus_section}
 
 ## Local References
 
@@ -515,7 +807,14 @@ Generated at: {generated_at}
 """
 
 
-def write_skill(output_dir: Path, skill_name: str, pages: list[Page], start_url: str, overwrite: bool) -> None:
+def write_skill(
+    output_dir: Path,
+    skill_name: str,
+    pages: list[Page],
+    start_url: str,
+    overwrite: bool,
+    llm_config: LlmConfig | None = None,
+) -> None:
     if output_dir.exists() and any(output_dir.iterdir()) and not overwrite:
         raise BuildError(f"Output directory is not empty: {output_dir}. Use --overwrite to replace generated files.")
     if overwrite:
@@ -541,7 +840,8 @@ def write_skill(output_dir: Path, skill_name: str, pages: list[Page], start_url:
         json.dumps({"source": start_url, "pages": index_items}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    (output_dir / "SKILL.md").write_text(render_skill_md(skill_name, index_items, start_url), encoding="utf-8")
+    summary = summarize_skill(skill_name, pages, start_url, llm_config) if llm_config else None
+    (output_dir / "SKILL.md").write_text(render_skill_md(skill_name, index_items, start_url, summary), encoding="utf-8")
 
 
 def render_reference_page(page: Page) -> str:
@@ -558,6 +858,13 @@ def non_negative_int(value: str) -> int:
     parsed = int(value)
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be >= 0")
+    return parsed
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be > 0")
     return parsed
 
 
@@ -591,6 +898,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=20.0, help="Request timeout in seconds.")
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT, help="HTTP User-Agent header.")
     parser.add_argument("--overwrite", action="store_true", help="Allow writing into a non-empty output directory.")
+    parser.add_argument(
+        "--summarize-skill",
+        action="store_true",
+        help="Use an OpenAI-compatible chat completions API to summarize downloaded pages into SKILL.md.",
+    )
+    parser.add_argument(
+        "--llm-api-key",
+        default=os.environ.get("OPENAI_API_KEY"),
+        help="API key for --summarize-skill. Defaults to OPENAI_API_KEY.",
+    )
+    parser.add_argument(
+        "--llm-base-url",
+        default=os.environ.get("OPENAI_BASE_URL", DEFAULT_LLM_BASE_URL),
+        help=f"OpenAI-compatible API base URL. Defaults to OPENAI_BASE_URL or {DEFAULT_LLM_BASE_URL}.",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=os.environ.get("OPENAI_MODEL", DEFAULT_LLM_MODEL),
+        help=f"Model used by --summarize-skill. Defaults to OPENAI_MODEL or {DEFAULT_LLM_MODEL}.",
+    )
+    parser.add_argument(
+        "--llm-max-input-chars",
+        type=positive_int,
+        default=DEFAULT_LLM_MAX_INPUT_CHARS,
+        help="Maximum downloaded-document characters sent to the LLM summary request.",
+    )
     return parser
 
 
@@ -624,7 +957,18 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
         if not pages:
             raise BuildError("No pages were downloaded. Check network access, URL scope, or site markup.")
-        write_skill(output_dir, skill_name, pages, args.start_url, overwrite=args.overwrite)
+        llm_config = None
+        if args.summarize_skill:
+            if not args.llm_api_key:
+                raise BuildError("--summarize-skill requires --llm-api-key or OPENAI_API_KEY.")
+            llm_config = LlmConfig(
+                api_key=args.llm_api_key,
+                base_url=args.llm_base_url,
+                model=args.llm_model,
+                timeout=args.timeout,
+                max_input_chars=args.llm_max_input_chars,
+            )
+        write_skill(output_dir, skill_name, pages, args.start_url, overwrite=args.overwrite, llm_config=llm_config)
     except BuildError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
