@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harmonyos-skill-builder"
+version = "0.1.0"
+description = "Download Huawei HarmonyOS docs and generate a Codex skill."
+requires-python = ">=3.10"
+authors = [{ name = "CodeSnippet" }]
+dependencies = []
+
+[project.scripts]
+harmonyos-skill-builder = "harmonyos_skill_builder.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["harmonyos_skill_builder*"]
